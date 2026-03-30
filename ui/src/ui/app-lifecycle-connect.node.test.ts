@@ -36,6 +36,7 @@ vi.mock("./app-scroll.ts", () => ({
   observeTopbar: vi.fn(),
   scheduleChatScroll: vi.fn(),
   scheduleLogsScroll: vi.fn(),
+  syncChatProgressActive: vi.fn(),
 }));
 
 import { handleConnected } from "./app-lifecycle.ts";
@@ -57,9 +58,11 @@ function createHost() {
     chatMessages: [],
     chatToolMessages: [],
     chatStream: "",
+    chatProgressActiveKey: null,
     logsAutoFollow: false,
     logsAtBottom: true,
     logsEntries: [],
+    querySelector: vi.fn(),
     popStateHandler: vi.fn(),
     topbarObserver: null,
   };

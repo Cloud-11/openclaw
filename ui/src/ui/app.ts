@@ -35,6 +35,7 @@ import {
   handleChatScroll as handleChatScrollInternal,
   handleLogsScroll as handleLogsScrollInternal,
   resetChatScroll as resetChatScrollInternal,
+  scrollChatProgressAnchor as scrollChatProgressAnchorInternal,
   scheduleChatScroll as scheduleChatScrollInternal,
 } from "./app-scroll.ts";
 import {
@@ -171,6 +172,7 @@ export class OpenClawApp extends LitElement {
   @state() chatQueue: ChatQueueItem[] = [];
   @state() chatAttachments: ChatAttachment[] = [];
   @state() chatManualRefreshInFlight = false;
+  @state() chatProgressActiveKey: string | null = null;
   @state() navDrawerOpen = false;
 
   onSlashAction?: (action: string) => void;
@@ -566,6 +568,15 @@ export class OpenClawApp extends LitElement {
       true,
       Boolean(opts?.smooth),
     );
+  }
+
+  scrollToChatProgress(key: string, opts?: { smooth?: boolean }) {
+    scrollChatProgressAnchorInternal(
+      this as unknown as Parameters<typeof scrollChatProgressAnchorInternal>[0],
+      key,
+      opts?.smooth ?? true,
+    );
+    this.requestUpdate();
   }
 
   async loadAssistantIdentity() {

@@ -13,6 +13,7 @@ import {
   renderStreamingGroup,
 } from "../chat/grouped-render.ts";
 import { InputHistory } from "../chat/input-history.ts";
+import { extractTextCached } from "../chat/message-extract.ts";
 import { normalizeMessage, normalizeRoleForGrouping } from "../chat/message-normalizer.ts";
 import { PinnedMessages } from "../chat/pinned-messages.ts";
 import { getPinnedMessageSummary } from "../chat/pinned-summary.ts";
@@ -51,6 +52,15 @@ export type FallbackIndicatorStatus = {
   occurredAt: number;
 };
 
+type ChatProgressItem = {
+  key: string;
+  anchorId: string;
+  label: string;
+  preview: string;
+  timestamp: number;
+  timestampLabel: string;
+};
+
 export type ChatProps = {
   sessionKey: string;
   onSessionKeyChange: (next: string) => void;
@@ -85,7 +95,9 @@ export type ChatProps = {
   attachments?: ChatAttachment[];
   onAttachmentsChange?: (attachments: ChatAttachment[]) => void;
   showNewMessages?: boolean;
+  chatProgressActiveKey?: string | null;
   onScrollToBottom?: () => void;
+  onChatProgressSelect?: (key: string) => void;
   onRefresh: () => void;
   onToggleFocusMode: () => void;
   getDraft?: () => string;
@@ -882,6 +894,246 @@ function renderSlashMenu(
   `;
 }
 
+const CHAT_PROGRESS_PREVIEW_MAX_CHARS = 96;
+const CHAT_PROGRESS_VISIBLE_DOT_COUNT = 12;
+const CHAT_PROGRESS_PAGE_STEP = Math.max(1, Math.floor(CHAT_PROGRESS_VISIBLE_DOT_COUNT / 2));
+
+function collapseChatProgressWhitespace(text: string): string {
+  return text.replace(/\s+/g, " ").trim();
+}
+
+function truncateChatProgressPreview(text: string): string {
+  if (text.length <= CHAT_PROGRESS_PREVIEW_MAX_CHARS) {
+    return text;
+  }
+  return `${text.slice(0, CHAT_PROGRESS_PREVIEW_MAX_CHARS - 1).trimEnd()}...`;
+}
+
+function formatChatProgressTimestamp(timestamp: number): string {
+  return new Date(timestamp).toLocaleTimeString([], {
+    hour: "numeric",
+    minute: "2-digit",
+  });
+}
+
+function formatChatProgressDate(timestamp: number): string {
+  return new Date(timestamp).toLocaleDateString([], {
+    month: "short",
+    day: "numeric",
+  });
+}
+
+function toChatProgressAnchorId(key: string): string {
+  const safeKey = key.replace(/[^a-zA-Z0-9_-]+/g, "-").replace(/^-+|-+$/g, "");
+  return `chat-progress-anchor-${safeKey || "message"}`;
+}
+
+function countChatProgressImages(message: unknown): number {
+  const content = (message as Record<string, unknown>).content;
+  if (!Array.isArray(content)) {
+    return 0;
+  }
+  let count = 0;
+  for (const block of content) {
+    if (!block || typeof block !== "object") {
+      continue;
+    }
+    const type =
+      typeof (block as Record<string, unknown>).type === "string"
+        ? ((block as Record<string, unknown>).type as string).toLowerCase()
+        : "";
+    if (type === "image" || type === "image_url" || type === "input_image") {
+      count += 1;
+    }
+  }
+  return count;
+}
+
+function extractChatProgressMessagePreview(message: unknown): string {
+  const text = collapseChatProgressWhitespace(extractTextCached(message) ?? "");
+  if (text) {
+    return text;
+  }
+  const imageCount = countChatProgressImages(message);
+  if (imageCount === 1) {
+    return "Sent an image";
+  }
+  if (imageCount > 1) {
+    return `Sent ${imageCount} images`;
+  }
+  return "Sent a message";
+}
+
+function buildChatProgressPreview(group: MessageGroup): string {
+  const parts: string[] = [];
+  for (const item of group.messages) {
+    const preview = collapseChatProgressWhitespace(
+      extractChatProgressMessagePreview(item.message),
+    );
+    if (!preview) {
+      continue;
+    }
+    parts.push(preview);
+    if (parts.join(" ").length >= CHAT_PROGRESS_PREVIEW_MAX_CHARS) {
+      break;
+    }
+  }
+  return truncateChatProgressPreview(parts.join(" ") || "Sent a message");
+}
+
+function buildChatProgressItems(
+  chatItems: Array<ChatItem | MessageGroup>,
+  deleted: DeletedMessages,
+): ChatProgressItem[] {
+  const result: ChatProgressItem[] = [];
+  for (const item of chatItems) {
+    if (item.kind !== "group" || deleted.has(item.key)) {
+      continue;
+    }
+    if (normalizeRoleForGrouping(item.role).toLowerCase() !== "user") {
+      continue;
+    }
+    result.push({
+      key: item.key,
+      anchorId: toChatProgressAnchorId(item.key),
+      label: item.senderLabel?.trim() || "You",
+      preview: buildChatProgressPreview(item),
+      timestamp: item.timestamp,
+      timestampLabel: formatChatProgressTimestamp(item.timestamp),
+    });
+  }
+  return result;
+}
+
+function resolveActiveChatProgressKey(
+  chatProgressItems: ChatProgressItem[],
+  activeKey: string | null | undefined,
+): string | null {
+  if (chatProgressItems.length === 0) {
+    return null;
+  }
+  if (activeKey && chatProgressItems.some((item) => item.key === activeKey)) {
+    return activeKey;
+  }
+  return chatProgressItems[chatProgressItems.length - 1]?.key ?? null;
+}
+
+function formatChatProgressRangeLabel(start: ChatProgressItem, end: ChatProgressItem): string {
+  const sameDay = formatChatProgressDate(start.timestamp) === formatChatProgressDate(end.timestamp);
+  if (sameDay) {
+    return `${formatChatProgressDate(start.timestamp)} • ${start.timestampLabel} to ${end.timestampLabel}`;
+  }
+  return `${formatChatProgressDate(start.timestamp)} ${start.timestampLabel} to ${formatChatProgressDate(end.timestamp)} ${end.timestampLabel}`;
+}
+
+function buildChatProgressJump(
+  chatProgressItems: ChatProgressItem[],
+  activeIndex: number,
+  direction: "older" | "newer",
+): { targetKey: string; title: string } | null {
+  if (chatProgressItems.length < 2) {
+    return null;
+  }
+
+  if (direction === "older") {
+    if (activeIndex <= 0) {
+      return null;
+    }
+    const targetIndex = Math.max(0, activeIndex - CHAT_PROGRESS_PAGE_STEP);
+    const hiddenCount = activeIndex - targetIndex;
+    const start = chatProgressItems[targetIndex];
+    const end = chatProgressItems[Math.max(targetIndex, activeIndex - 1)];
+    return {
+      targetKey: start.key,
+      title: `Jump to older turns • ${hiddenCount} turns • ${formatChatProgressRangeLabel(start, end)}`,
+    };
+  }
+
+  if (activeIndex >= chatProgressItems.length - 1) {
+    return null;
+  }
+
+  const targetIndex = Math.min(chatProgressItems.length - 1, activeIndex + CHAT_PROGRESS_PAGE_STEP);
+  const hiddenCount = targetIndex - activeIndex;
+  const start = chatProgressItems[Math.min(activeIndex + 1, targetIndex)];
+  const end = chatProgressItems[targetIndex];
+  return {
+    targetKey: end.key,
+    title: `Jump to newer turns • ${hiddenCount} turns • ${formatChatProgressRangeLabel(start, end)}`,
+  };
+}
+
+function renderChatProgressRail(
+  chatProgressItems: ChatProgressItem[],
+  activeKey: string | null,
+  onSelect?: (key: string) => void,
+) {
+  if (chatProgressItems.length < 2) {
+    return nothing;
+  }
+
+  const activeIndex = Math.max(
+    0,
+    chatProgressItems.findIndex((item) => item.key === activeKey),
+  );
+  const olderJump = buildChatProgressJump(chatProgressItems, activeIndex, "older");
+  const newerJump = buildChatProgressJump(chatProgressItems, activeIndex, "newer");
+
+  return html`
+    <div class="chat-progress-rail" data-visible="false" hidden aria-label="Conversation progress">
+      <button
+        class="chat-progress-rail__nav chat-progress-rail__nav--up"
+        type="button"
+        aria-label=${olderJump?.title ?? "No older turns"}
+        title=${olderJump?.title ?? "No older turns"}
+        ?disabled=${!olderJump}
+        @click=${() => olderJump && onSelect?.(olderJump.targetKey)}
+      >
+        ${icons.arrowDown}
+      </button>
+      <div class="chat-progress-rail__window">
+        <div
+          class="chat-progress-rail__list"
+          role="list"
+          aria-label="Conversation turns"
+          data-chat-progress-visible-count=${String(CHAT_PROGRESS_VISIBLE_DOT_COUNT)}
+        >
+          ${chatProgressItems.map((item, index) => {
+            const isActive = item.key === activeKey;
+            const summary = `${item.label} • ${formatChatProgressDate(item.timestamp)} • ${item.timestampLabel}`;
+            return html`
+              <button
+                class="chat-progress-rail__dot ${isActive ? "is-active" : ""}"
+                type="button"
+                data-chat-progress-select=${item.key}
+                data-chat-progress-index=${String(index)}
+                data-chat-progress-preview=${item.preview}
+                title=${`${summary}: ${item.preview}`}
+                aria-label=${`${summary}: ${item.preview}`}
+                aria-current=${isActive ? "step" : nothing}
+                @click=${() => onSelect?.(item.key)}
+              ></button>
+            `;
+          })}
+        </div>
+      </div>
+      <button
+        class="chat-progress-rail__nav chat-progress-rail__nav--down"
+        type="button"
+        aria-label=${newerJump?.title ?? "No newer turns"}
+        title=${newerJump?.title ?? "No newer turns"}
+        ?disabled=${!newerJump}
+        @click=${() => newerJump && onSelect?.(newerJump.targetKey)}
+      >
+        ${icons.arrowDown}
+      </button>
+    </div>
+    <div class="chat-progress-rail__preview" data-visible="false" hidden aria-hidden="true">
+      <div class="chat-progress-rail__preview-text"></div>
+    </div>
+  `;
+}
+
 export function renderChat(props: ChatProps) {
   const canCompose = props.connected;
   const isBusy = props.sending || props.stream !== null;
@@ -933,6 +1185,12 @@ export function renderChat(props: ChatProps) {
   };
 
   const chatItems = buildChatItems(props);
+  const chatProgressItems = buildChatProgressItems(chatItems, deleted);
+  const chatProgressByKey = new Map(chatProgressItems.map((item) => [item.key, item]));
+  const activeChatProgressKey = resolveActiveChatProgressKey(
+    chatProgressItems,
+    props.chatProgressActiveKey,
+  );
   const isEmpty = chatItems.length === 0 && !props.loading;
 
   const thread = html`
@@ -1016,6 +1274,7 @@ export function renderChat(props: ChatProps) {
               if (deleted.has(item.key)) {
                 return nothing;
               }
+              const chatProgressItem = chatProgressByKey.get(item.key);
               return renderMessageGroup(item, {
                 onOpenSidebar: props.onOpenSidebar,
                 showReasoning,
@@ -1025,6 +1284,9 @@ export function renderChat(props: ChatProps) {
                 basePath: props.basePath,
                 contextWindow:
                   activeSession?.contextTokens ?? props.sessions?.defaults?.contextTokens ?? null,
+                anchorId: chatProgressItem?.anchorId,
+                chatProgressKey: chatProgressItem?.key,
+                chatProgressPreview: chatProgressItem?.preview,
                 onDelete: () => {
                   deleted.delete(item.key);
                   requestUpdate();
@@ -1036,6 +1298,11 @@ export function renderChat(props: ChatProps) {
         )}
       </div>
     </div>
+    ${renderChatProgressRail(
+      chatProgressItems,
+      activeChatProgressKey,
+      props.onChatProgressSelect,
+    )}
   `;
 
   const handleKeyDown = (e: KeyboardEvent) => {

@@ -177,6 +177,7 @@ function createProps(overrides: Partial<ChatProps> = {}): ChatProps {
     error: null,
     sessions: createSessions(),
     focusMode: false,
+    chatProgressActiveKey: null,
     assistantName: "OpenClaw",
     assistantAvatar: null,
     onRefresh: () => undefined,
@@ -242,6 +243,28 @@ function createOverviewProps(overrides: Partial<OverviewProps> = {}): OverviewPr
     onRefreshLogs: () => undefined,
     ...overrides,
   };
+}
+
+function createChatProgressMessages(turnCount: number) {
+  const messages: Array<Record<string, unknown>> = [];
+  const start = Date.UTC(2025, 2, 24, 9, 0, 0);
+  for (let index = 0; index < turnCount; index += 1) {
+    const userTimestamp = start + index * 60_000;
+    const assistantTimestamp = userTimestamp + 30_000;
+    messages.push({
+      id: `u-${index}`,
+      role: "user",
+      content: `User turn ${index + 1}`,
+      timestamp: userTimestamp,
+    });
+    messages.push({
+      id: `a-${index}`,
+      role: "assistant",
+      content: `Assistant reply ${index + 1}`,
+      timestamp: assistantTimestamp,
+    });
+  }
+  return messages;
 }
 
 describe("chat view", () => {
@@ -714,6 +737,158 @@ describe("chat view", () => {
     );
     expect(senderLabels).toContain("Iris");
     expect(senderLabels).toContain("Joaquin De Rojas");
+  });
+
+  it("renders a chat progress rail for multiple user turns and marks the active turn", () => {
+    const container = document.createElement("div");
+    render(
+      renderChat(
+        createProps({
+          chatProgressActiveKey: "group:user:msg:2",
+          messages: [
+            {
+              id: "0",
+              role: "user",
+              content: "First question about the deployment status",
+            },
+            {
+              role: "assistant",
+              content: "Everything looks healthy.",
+            },
+            {
+              id: "2",
+              role: "user",
+              content: "Can you also summarize the latest error spike?",
+            },
+          ],
+        }),
+      ),
+      container,
+    );
+
+    const progressDots = container.querySelectorAll<HTMLButtonElement>(".chat-progress-rail__dot");
+    expect(progressDots).toHaveLength(2);
+
+    const activeDot = container.querySelector<HTMLButtonElement>(
+      '[data-chat-progress-select="group:user:msg:2"]',
+    );
+    expect(activeDot?.getAttribute("aria-current")).toBe("step");
+
+    const anchoredGroup = container.querySelector<HTMLElement>(
+      '.chat-group.user[data-chat-progress-anchor="group:user:msg:2"]',
+    );
+    expect(anchoredGroup?.id).toBe("chat-progress-anchor-group-user-msg-2");
+  });
+
+  it("shows text and image fallback previews in the chat progress rail", () => {
+    const container = document.createElement("div");
+    render(
+      renderChat(
+        createProps({
+          messages: [
+            {
+              id: "0",
+              role: "user",
+              content: "Please review the production notes before lunch",
+            },
+            {
+              role: "assistant",
+              content: "I can do that.",
+            },
+            {
+              id: "2",
+              role: "user",
+              content: [
+                { type: "image", url: "https://example.com/1.png" },
+                { type: "image_url", image_url: { url: "https://example.com/2.png" } },
+              ],
+            },
+          ],
+        }),
+      ),
+      container,
+    );
+
+    const previewTexts = Array.from(
+      container.querySelectorAll<HTMLButtonElement>(".chat-progress-rail__dot"),
+    ).map((node) => node.dataset.chatProgressPreview?.trim());
+
+    expect(previewTexts).toContain("Please review the production notes before lunch");
+    expect(previewTexts).toContain("Sent 2 images");
+  });
+
+  it("calls onChatProgressSelect when a progress marker is clicked", () => {
+    const onChatProgressSelect = vi.fn();
+    const container = document.createElement("div");
+    render(
+      renderChat(
+        createProps({
+          onChatProgressSelect,
+          messages: [
+            {
+              id: "0",
+              role: "user",
+              content: "First message",
+            },
+            {
+              role: "assistant",
+              content: "Reply",
+            },
+            {
+              id: "2",
+              role: "user",
+              content: "Second message",
+            },
+          ],
+        }),
+      ),
+      container,
+    );
+
+    const target = container.querySelector<HTMLButtonElement>(
+      '[data-chat-progress-select="group:user:msg:2"]',
+    );
+    expect(target).not.toBeNull();
+    target?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+
+    expect(onChatProgressSelect).toHaveBeenCalledWith("group:user:msg:2");
+  });
+
+  it("renders rail pagination buttons with time-range labels and jump targets", () => {
+    const onChatProgressSelect = vi.fn();
+    const container = document.createElement("div");
+    render(
+      renderChat(
+        createProps({
+          onChatProgressSelect,
+          chatProgressActiveKey: "group:user:msg:u-1",
+          messages: createChatProgressMessages(3),
+        }),
+      ),
+      container,
+    );
+
+    const olderButton = container.querySelector<HTMLButtonElement>(
+      ".chat-progress-rail__nav--up",
+    );
+    const newerButton = container.querySelector<HTMLButtonElement>(
+      ".chat-progress-rail__nav--down",
+    );
+
+    expect(olderButton).not.toBeNull();
+    expect(newerButton).not.toBeNull();
+    expect(olderButton?.title).toContain("Jump to older turns");
+    expect(olderButton?.title).toContain("turns");
+    expect(olderButton?.title).toContain("to");
+    expect(newerButton?.title).toContain("Jump to newer turns");
+    expect(newerButton?.title).toContain("turns");
+    expect(newerButton?.title).toContain("to");
+
+    olderButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    newerButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+
+    expect(onChatProgressSelect).toHaveBeenNthCalledWith(1, "group:user:msg:u-0");
+    expect(onChatProgressSelect).toHaveBeenNthCalledWith(2, "group:user:msg:u-2");
   });
 
   it("opens delete confirm on the left for user messages", () => {

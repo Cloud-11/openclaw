@@ -1,4 +1,5 @@
 import { html, nothing } from "lit";
+import { ifDefined } from "lit/directives/if-defined.js";
 import { unsafeHTML } from "lit/directives/unsafe-html.js";
 import { getSafeLocalStorage } from "../../local-storage.ts";
 import type { AssistantIdentity } from "../assistant-identity.ts";
@@ -120,6 +121,9 @@ export function renderMessageGroup(
     assistantAvatar?: string | null;
     basePath?: string;
     contextWindow?: number | null;
+    anchorId?: string;
+    chatProgressKey?: string;
+    chatProgressPreview?: string;
     onDelete?: () => void;
   },
 ) {
@@ -151,7 +155,12 @@ export function renderMessageGroup(
   const meta = extractGroupMeta(group, opts.contextWindow ?? null);
 
   return html`
-    <div class="chat-group ${roleClass}">
+    <div
+      class="chat-group ${roleClass}"
+      id=${ifDefined(opts.anchorId)}
+      data-chat-progress-anchor=${ifDefined(opts.chatProgressKey)}
+      data-chat-progress-preview=${ifDefined(opts.chatProgressPreview)}
+    >
       ${renderAvatar(
         group.role,
         {

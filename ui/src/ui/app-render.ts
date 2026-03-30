@@ -1508,7 +1508,20 @@ export function renderApp(state: AppViewState) {
                 switchChatSession(state, key);
               },
               showNewMessages: state.chatNewMessagesBelow && !state.chatManualRefreshInFlight,
+              chatProgressActiveKey:
+                (state as AppViewState & { chatProgressActiveKey?: string | null })
+                  .chatProgressActiveKey ?? null,
               onScrollToBottom: () => state.scrollToBottom(),
+              onChatProgressSelect: (key: string) => {
+                (
+                  state as AppViewState & {
+                    scrollToChatProgress?: (
+                      progressKey: string,
+                      opts?: { smooth?: boolean },
+                    ) => void;
+                  }
+                ).scrollToChatProgress?.(key, { smooth: true });
+              },
               // Sidebar props for tool output viewing
               sidebarOpen: state.sidebarOpen,
               sidebarContent: state.sidebarContent,

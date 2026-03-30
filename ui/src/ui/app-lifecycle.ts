@@ -7,7 +7,12 @@ import {
   startDebugPolling,
   stopDebugPolling,
 } from "./app-polling.ts";
-import { observeTopbar, scheduleChatScroll, scheduleLogsScroll } from "./app-scroll.ts";
+import {
+  observeTopbar,
+  scheduleChatScroll,
+  scheduleLogsScroll,
+  syncChatProgressActive,
+} from "./app-scroll.ts";
 import {
   applySettingsFromUrl,
   attachThemeListener,
@@ -35,9 +40,11 @@ type LifecycleHost = {
   chatMessages: unknown[];
   chatToolMessages: unknown[];
   chatStream: string | null;
+  chatProgressActiveKey: string | null;
   logsAutoFollow: boolean;
   logsAtBottom: boolean;
   logsEntries: unknown[];
+  querySelector: (selectors: string) => Element | null;
   popStateHandler: () => void;
   topbarObserver: ResizeObserver | null;
 };
@@ -109,6 +116,9 @@ export function handleUpdated(host: LifecycleHost, changed: Map<PropertyKey, unk
       host as unknown as Parameters<typeof scheduleChatScroll>[0],
       forcedByTab || forcedByLoad || streamJustStarted || !host.chatHasAutoScrolled,
     );
+  }
+  if (host.tab === "chat") {
+    syncChatProgressActive(host as unknown as Parameters<typeof syncChatProgressActive>[0]);
   }
   if (
     host.tab === "logs" &&
